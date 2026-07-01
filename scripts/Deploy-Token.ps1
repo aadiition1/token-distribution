@@ -1,17 +1,22 @@
 #Requires -Version 5.1
 <#
 .Synopsis
-   Deploy an ERC-20/TRC-20 token contract
+   Deploy an ERC-20 token contract using Foundry (forge create)
 .DESCRIPTION
-   Deploys a new token contract to Ethereum or TRON networks.
-   Requires the Solidity contract file to be compiled (via forge or solc).
-   
-.EXAMPLE
-   .\Deploy-Token.ps1 -ContractName "TestToken" -TokenName "My Token" -Symbol "MTK" `
-     -Decimals 18 -InitialSupply 1000000 -RpcUrl "https://eth-sepolia.infura.io/v3/YOUR-KEY"
+   Compiles and deploys a new ERC-20 token contract to an EVM network.
+   Requires Foundry (forge + cast) to be installed: https://getfoundry.sh
+
+   The script blocks until the deployment transaction is confirmed on-chain and
+   verifies the receipt status before reporting success.
 
 .EXAMPLE
-   .\Deploy-Token.ps1 -ContractPath "./ERC20Token.sol" -Constructor "MyToken","MYT",18,1000000
+   .\Deploy-Token.ps1 -TokenName "My Token" -Symbol "MTK" -Decimals 18 `
+     -InitialSupply 1000000 -RpcUrl "https://eth-sepolia.infura.io/v3/YOUR-KEY"
+
+.EXAMPLE
+   $env:ETH_RPC_URL = "https://mainnet.infura.io/v3/YOUR-KEY"
+   $env:PRIVATE_KEY  = "0xYOUR_KEY"
+   .\Deploy-Token.ps1 -TokenName "MyToken" -Symbol "MTK" -Decimals 18 -InitialSupply 1000000
 #>
 
 param(
@@ -21,29 +26,70 @@ param(
   [Parameter(Mandatory = $true)]
   [string]$Symbol,
 
+  # 0-255 — mapped to Solidity uint8
   [Parameter(Mandatory = $true)]
-  [uint8]$Decimals,
+  [ValidateRange(0, 255)]
+  [int]$Decimals,
 
+  # Whole-token initial supply (constructor multiplies by 10^decimals internally)
   [Parameter(Mandatory = $true)]
-  [uint256]$InitialSupply,
+  [string]$InitialSupply,
 
   [string]$ContractName = "ERC20Token",
   [string]$ContractPath = "./contracts/ERC20Token.sol",
-  [string]$RpcUrl = $env:ETH_RPC_URL,
-  [string]$PrivateKey = $env:PRIVATE_KEY,
+  [string]$RpcUrl      = $env:ETH_RPC_URL,
+  [string]$PrivateKey  = $env:PRIVATE_KEY,
   [switch]$Verify,
   [string]$VerifyUrl
 )
 
-# Validation
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+# ── Prerequisite checks ────────────────────────────────────────────────────────
+
+if (-not (Get-Command "forge" -ErrorAction SilentlyContinue)) {
+  Write-Error "Foundry 'forge' not found. Install from https://getfoundry.sh and re-run."
+  exit 1
+}
+
+if (-not (Get-Command "cast" -ErrorAction SilentlyContinue)) {
+  Write-Error "Foundry 'cast' not found. Install from https://getfoundry.sh and re-run."
+  exit 1
+}
+
+# ── Input validation ───────────────────────────────────────────────────────────
+
 if (-not $RpcUrl) {
-  Write-Error "RpcUrl not provided and ETH_RPC_URL environment variable not set"
+  Write-Error "RpcUrl not provided and ETH_RPC_URL environment variable is not set."
   exit 1
 }
 
 if (-not $PrivateKey) {
-  Write-Error "PrivateKey not provided and PRIVATE_KEY environment variable not set"
+  Write-Error "PrivateKey not provided and PRIVATE_KEY environment variable is not set."
   exit 1
+}
+
+# Validate InitialSupply is a non-negative integer string
+if ($InitialSupply -notmatch '^\d+$') {
+  Write-Error "InitialSupply must be a non-negative integer (whole tokens). Got: '$InitialSupply'"
+  exit 1
+}
+
+# Resolve contract path (try CWD first, then relative to this script's directory)
+if (-not [System.IO.Path]::IsPathRooted($ContractPath)) {
+  $cwdResolved = Join-Path (Get-Location) $ContractPath
+  if (Test-Path $cwdResolved) {
+    $ContractPath = $cwdResolved
+  } else {
+    # Script is in scripts/, contract is in contracts/ at the same level
+    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $repoRoot  = Split-Path -Parent $scriptDir
+    $repoResolved = Join-Path $repoRoot "contracts" "ERC20Token.sol"
+    if (Test-Path $repoResolved) {
+      $ContractPath = $repoResolved
+    }
+  }
 }
 
 if (-not (Test-Path $ContractPath)) {
@@ -51,195 +97,152 @@ if (-not (Test-Path $ContractPath)) {
   exit 1
 }
 
-# Get deployer address
-$deployer = & cast wallet address --private-key $PrivateKey 2>$null
+# ── Derive deployer address ────────────────────────────────────────────────────
+
+$deployer = (& cast wallet address --private-key $PrivateKey 2>&1)
 if ($LASTEXITCODE -ne 0) {
-  Write-Error "Failed to derive address from private key"
+  Write-Error "Failed to derive address from private key: $deployer"
   exit 1
 }
+$deployer = $deployer.Trim()
 
+# ── Print deployment plan ──────────────────────────────────────────────────────
+
+Write-Host ""
 Write-Host "🚀 Token Contract Deployment" -ForegroundColor Cyan
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
-Write-Host "Token Name: $TokenName" -ForegroundColor Green
-Write-Host "Symbol: $Symbol" -ForegroundColor Green
-Write-Host "Decimals: $Decimals" -ForegroundColor Green
-Write-Host "Initial Supply: $InitialSupply" -ForegroundColor Green
+Write-Host "Token Name    : $TokenName" -ForegroundColor Green
+Write-Host "Symbol        : $Symbol" -ForegroundColor Green
+Write-Host "Decimals      : $Decimals" -ForegroundColor Green
+Write-Host "Initial Supply: $InitialSupply (whole tokens)" -ForegroundColor Green
 Write-Host ""
-Write-Host "Deployer: $deployer" -ForegroundColor Yellow
-Write-Host "RPC URL: $RpcUrl" -ForegroundColor DarkGray
+Write-Host "Deployer  : $deployer" -ForegroundColor Yellow
+Write-Host "RPC URL   : $RpcUrl" -ForegroundColor DarkGray
+Write-Host "Contract  : $ContractPath" -ForegroundColor DarkGray
 Write-Host ""
 
-# Read contract bytecode
-Write-Host "Reading contract from: $ContractPath" -ForegroundColor DarkGray
-$contractContent = Get-Content -Path $ContractPath -Raw
+# ── Compile and deploy via forge create ───────────────────────────────────────
 
-# Check if using forge or solc
-$forgeProject = Test-Path "forge.toml" -ErrorAction SilentlyContinue
-$hardhatProject = Test-Path "hardhat.config.js" -ErrorAction SilentlyContinue
+Write-Host "📡 Compiling and deploying with forge create..." -ForegroundColor Cyan
 
-if ($forgeProject) {
-  Write-Host "📦 Using Foundry (forge) to compile..." -ForegroundColor Cyan
-  
-  # Build with forge
-  forge build 2>&1 | Out-Null
-  if ($LASTEXITCODE -ne 0) {
-    Write-Error "Forge compilation failed"
-    exit 1
-  }
-  
-  # Get compiled artifact
-  $artifactPath = "./out/$ContractName.sol/$ContractName.json"
-  if (-not (Test-Path $artifactPath)) {
-    Write-Error "Compiled artifact not found: $artifactPath"
-    exit 1
-  }
-  
-  $artifact = Get-Content $artifactPath | ConvertFrom-Json
-  $bytecode = $artifact.bytecode.object
-  $abi = $artifact.abi | ConvertTo-Json -Compress
-  
-} elseif ($hardhatProject) {
-  Write-Host "📦 Using Hardhat to compile..." -ForegroundColor Cyan
-  
-  # Build with hardhat
-  npx hardhat compile 2>&1 | Out-Null
-  if ($LASTEXITCODE -ne 0) {
-    Write-Error "Hardhat compilation failed"
-    exit 1
-  }
-  
-  # Get compiled artifact
-  $artifactPath = "./artifacts/contracts/$([System.IO.Path]::GetFileName($ContractPath))/$ContractName.json"
-  if (-not (Test-Path $artifactPath)) {
-    Write-Error "Compiled artifact not found: $artifactPath"
-    exit 1
-  }
-  
-  $artifact = Get-Content $artifactPath | ConvertFrom-Json
-  $bytecode = $artifact.bytecode
-  $abi = $artifact.abi | ConvertTo-Json -Compress
-  
-} else {
-  Write-Error "No forge.toml or hardhat.config.js found. Please use Foundry or Hardhat."
-  exit 1
-}
-
-if (-not $bytecode) {
-  Write-Error "Failed to extract bytecode from compiled artifact"
-  exit 1
-}
-
-Write-Host "✅ Contract compiled successfully" -ForegroundColor Green
-
-# Encode constructor arguments
-Write-Host ""
-Write-Host "Encoding constructor arguments..." -ForegroundColor DarkGray
-Write-Host "  - name: '$TokenName'" -ForegroundColor DarkGray
-Write-Host "  - symbol: '$Symbol'" -ForegroundColor DarkGray
-Write-Host "  - decimals: $Decimals" -ForegroundColor DarkGray
-Write-Host "  - initialSupply: $InitialSupply" -ForegroundColor DarkGray
-
-# Create constructor argument encoding
-$nameEncoded = & cast encode-packed "string" "$TokenName"
-$symbolEncoded = & cast encode-packed "string" "$Symbol"
-$decimalsEncoded = & cast encode-packed "uint8" "$Decimals"
-$supplyEncoded = & cast encode-packed "uint256" "$InitialSupply"
-
-# Using cast to encode constructor parameters
-$constructorArgs = & cast abi-encode "constructor(string,string,uint8,uint256)" "$TokenName" "$Symbol" "$Decimals" "$InitialSupply" 2>&1
-
-if ($LASTEXITCODE -ne 0) {
-  Write-Error "Failed to encode constructor arguments: $constructorArgs"
-  exit 1
-}
-
-# Clean up the encoding output
-$constructorArgs = $constructorArgs.Trim()
-
-Write-Host "✅ Constructor arguments encoded" -ForegroundColor Green
-
-# Deploy contract
-Write-Host ""
-Write-Host "📡 Sending deployment transaction..." -ForegroundColor Cyan
-
-$deployCmd = @(
-  "cast", "send", "--rpc-url", $RpcUrl,
+$forgeArgs = @(
+  "create",
+  "${ContractPath}:${ContractName}",
+  "--constructor-args", $TokenName, $Symbol, "$Decimals", "$InitialSupply",
+  "--rpc-url",    $RpcUrl,
   "--private-key", $PrivateKey,
-  "--data", "$bytecode$constructorArgs"
+  "--json"
 )
 
-$deployOutput = & $deployCmd[0] @deployCmd[1..($deployCmd.Count - 1)] 2>&1
+# Capture stdout (JSON) and discard compiler progress on stderr
+$forgeOutput = & forge @forgeArgs 2>$null
+$forgeExitCode = $LASTEXITCODE
 
-if ($LASTEXITCODE -ne 0) {
-  Write-Error "Deployment failed: $deployOutput"
+if ($forgeExitCode -ne 0) {
+  # Re-run without --json to surface the real error message
+  $forgeErr = & forge @($forgeArgs | Where-Object { $_ -ne "--json" }) 2>&1
+  Write-Error "forge create failed (exit $forgeExitCode):`n$($forgeErr -join "`n")"
   exit 1
 }
 
-# Parse transaction hash
-$txHash = $deployOutput | Select-String -Pattern "transactionHash|0x[a-fA-F0-9]{64}" | Select-Object -First 1
-if ($txHash) {
-  $txHash = $txHash.ToString().Split()[-1]
-  Write-Host "✅ Deployment transaction sent" -ForegroundColor Green
-  Write-Host "   TxHash: $txHash" -ForegroundColor Yellow
-} else {
-  Write-Host "⚠️ Deployment completed but transaction hash unclear" -ForegroundColor Yellow
-  Write-Host "Output: $deployOutput" -ForegroundColor DarkGray
+# forge create --json writes one JSON object to stdout
+$jsonText = ($forgeOutput -join "").Trim()
+if (-not $jsonText) {
+  Write-Error "forge create returned no output. Deployment status unknown — do NOT assume success."
+  exit 1
 }
-
-# Wait for transaction receipt and get contract address
-Write-Host ""
-Write-Host "⏳ Waiting for transaction confirmation..." -ForegroundColor Cyan
 
 try {
-  $receipt = & cast receipt $txHash --rpc-url $RpcUrl 2>&1 | ConvertFrom-Json
-  
-  if ($receipt.contractAddress) {
-    $contractAddress = $receipt.contractAddress
-    Write-Host "✅ Contract deployed successfully!" -ForegroundColor Green
-    Write-Host "   Contract Address: $contractAddress" -ForegroundColor Green
-    Write-Host "   Block Number: $($receipt.blockNumber)" -ForegroundColor DarkGray
-    Write-Host "   Gas Used: $($receipt.gasUsed)" -ForegroundColor DarkGray
-  } else {
-    Write-Error "No contract address in receipt. Deployment may have failed."
-    exit 1
-  }
+  $deployResult = $jsonText | ConvertFrom-Json
 } catch {
-  Write-Error "Failed to get transaction receipt: $_"
+  Write-Error "Failed to parse forge create JSON output: $jsonText"
   exit 1
 }
 
-# Save deployment info
-$deploymentInfo = @{
-  timestamp = Get-Date -Format "o"
-  network = $RpcUrl
-  deployer = $deployer
+$txHash        = $deployResult.transactionHash
+$contractAddress = $deployResult.deployedTo
+
+if (-not $txHash -or $txHash -notmatch '^0x[a-fA-F0-9]{64}$') {
+  Write-Error "forge create output missing a valid transactionHash. Output: $jsonText"
+  exit 1
+}
+
+if (-not $contractAddress -or $contractAddress -notmatch '^0x[a-fA-F0-9]{40}$') {
+  Write-Error "forge create output missing a valid deployedTo address. Output: $jsonText"
+  exit 1
+}
+
+Write-Host "✅ Deployment transaction confirmed" -ForegroundColor Green
+Write-Host "   TxHash          : $txHash" -ForegroundColor Yellow
+Write-Host "   Contract Address: $contractAddress" -ForegroundColor Green
+
+# ── Verify receipt status on-chain ────────────────────────────────────────────
+
+Write-Host ""
+Write-Host "⏳ Fetching transaction receipt to verify success..." -ForegroundColor Cyan
+
+$receiptRaw = (& cast receipt $txHash --rpc-url $RpcUrl --json 2>&1) -join ""
+if ($LASTEXITCODE -ne 0) {
+  Write-Error "cast receipt failed: $receiptRaw"
+  exit 1
+}
+
+try {
+  $receipt = $receiptRaw | ConvertFrom-Json
+} catch {
+  Write-Error "Failed to parse receipt JSON: $receiptRaw"
+  exit 1
+}
+
+# Status is "0x1" for success (hex string from cast), "0x0" for revert.
+# Normalize to integer before comparing.
+$statusInt = if ($receipt.status -is [string] -and $receipt.status.StartsWith("0x")) {
+  [Convert]::ToInt32($receipt.status, 16)
+} else {
+  [int]$receipt.status
+}
+if ($statusInt -ne 1) {
+  Write-Error "Deployment transaction REVERTED on-chain (status=$($receipt.status)). Contract was NOT deployed."
+  exit 1
+}
+
+Write-Host "✅ On-chain status: SUCCESS" -ForegroundColor Green
+Write-Host "   Block Number: $(& cast --to-dec $receipt.blockNumber 2>$null)" -ForegroundColor DarkGray
+Write-Host "   Gas Used    : $(& cast --to-dec $receipt.gasUsed 2>$null)" -ForegroundColor DarkGray
+
+# ── Save deployment info ───────────────────────────────────────────────────────
+
+$deploymentInfo = [ordered]@{
+  timestamp       = Get-Date -Format "o"
+  network         = $RpcUrl
+  deployer        = $deployer
   contractAddress = $contractAddress
-  contractName = $ContractName
-  tokenName = $TokenName
-  symbol = $Symbol
-  decimals = $Decimals
-  initialSupply = $InitialSupply
+  contractName    = $ContractName
+  tokenName       = $TokenName
+  symbol          = $Symbol
+  decimals        = $Decimals
+  initialSupply   = $InitialSupply
   transactionHash = $txHash
-  abi = $abi
 } | ConvertTo-Json -Depth 10
 
-$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$deploymentFile = "deployment_${Symbol}_${timestamp}.json"
+$ts = Get-Date -Format "yyyyMMdd_HHmmss"
+$deploymentFile = "deployment_${Symbol}_${ts}.json"
 $deploymentInfo | Out-File -FilePath $deploymentFile -Encoding UTF8
 
 Write-Host ""
-Write-Host "💾 Deployment information saved to: $deploymentFile" -ForegroundColor Yellow
+Write-Host "💾 Deployment info saved to: $deploymentFile" -ForegroundColor Yellow
 
-# Verify on block explorer if requested
+# ── Optional block-explorer hint ──────────────────────────────────────────────
+
 if ($Verify -and $VerifyUrl) {
   Write-Host ""
-  Write-Host "🔍 Verifying contract on block explorer..." -ForegroundColor Cyan
-  Write-Host "Please visit: $VerifyUrl/address/$contractAddress" -ForegroundColor Yellow
+  Write-Host "🔍 View on explorer: $VerifyUrl/address/$contractAddress" -ForegroundColor Yellow
 }
 
 Write-Host ""
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
 Write-Host "✅ Deployment Complete!" -ForegroundColor Green
+Write-Host "   Contract: $contractAddress" -ForegroundColor Green
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
 
 exit 0
