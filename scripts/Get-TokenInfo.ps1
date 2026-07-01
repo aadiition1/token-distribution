@@ -1,12 +1,12 @@
 #Requires -Version 5.1
 <#
 .Synopsis
-   Query ERC-20/TRC-20 token information
+   Query ERC-20 token information
 .DESCRIPTION
    Retrieves token metadata (name, symbol, decimals, total supply, balance)
-   using cast to interact with smart contracts.
-   Compliant with ERC-20 and TRC-20 standards.
-   
+   using Foundry's cast to call the contract on-chain.
+   Requires Foundry (cast) to be installed: https://getfoundry.sh
+
 .EXAMPLE
    .\Get-TokenInfo.ps1 -Token "0xabcd..." -RpcUrl "https://eth-mainnet.g.alchemy.com/v2/YOUR-KEY"
 
@@ -23,8 +23,18 @@ param(
   [string]$RpcUrl = $env:ETH_RPC_URL
 )
 
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+# ── Prerequisite check ─────────────────────────────────────────────────────────
+
+if (-not (Get-Command "cast" -ErrorAction SilentlyContinue)) {
+  Write-Error "Foundry 'cast' not found. Install from https://getfoundry.sh and re-run."
+  exit 1
+}
+
 if (-not $RpcUrl) {
-  Write-Error "RpcUrl not provided and ETH_RPC_URL environment variable not set"
+  Write-Error "RpcUrl not provided and ETH_RPC_URL environment variable is not set."
   exit 1
 }
 
@@ -33,79 +43,86 @@ if ($Account) {
   $Account = $Account.ToLowerInvariant()
 }
 
+Write-Host ""
 Write-Host "📋 Token Information" -ForegroundColor Cyan
 Write-Host "Token Address: $Token" -ForegroundColor Green
 Write-Host ""
 
-# Function to call contract read methods
+# ── Helper: call a read-only contract function ────────────────────────────────
+# Signature must include return type(s), e.g. "name()(string)" or
+# "balanceOf(address)(uint256)".  cast decodes the return value automatically.
 function Invoke-ContractRead {
   param(
     [string]$ContractAddress,
-    [string]$Selector,
-    [string]$Args = "",
+    [string]$Signature,          # full sig including return type, e.g. "decimals()(uint8)"
+    [string[]]$CallArgs = @(),
     [string]$RpcUrl
   )
-  
-  if ($Args) {
-    return & cast call $ContractAddress $Selector $Args --rpc-url $RpcUrl 2>&1
-  } else {
-    return & cast call $ContractAddress "$Selector()" --rpc-url $RpcUrl 2>&1
-  }
+
+  $result = (& cast call $ContractAddress $Signature @CallArgs --rpc-url $RpcUrl 2>&1) -join "`n"
+  return $result.Trim()
 }
 
-# Get token name
+# ── Helper: format a raw uint256 token amount as human-readable ───────────────
+function Format-TokenAmount {
+  param([string]$RawAmount, [int]$Decimals)
+
+  $divisor   = [System.Numerics.BigInteger]::Pow(10, $Decimals)
+  $bigVal    = [System.Numerics.BigInteger]::Parse($RawAmount)
+  $whole     = $bigVal / $divisor
+  $remainder = $bigVal % $divisor
+
+  $display = "$whole"
+  if ($remainder -gt 0) {
+    $fracStr  = $remainder.ToString().PadLeft($Decimals, '0').TrimEnd('0')
+    $display += ".$fracStr"
+  }
+  return $display
+}
+
+# ── name() ────────────────────────────────────────────────────────────────────
 Write-Host "Fetching name()..." -NoNewline -ForegroundColor DarkGray
-$name = Invoke-ContractRead -ContractAddress $Token -Selector "name" -RpcUrl $RpcUrl
+$name = Invoke-ContractRead -ContractAddress $Token -Signature "name()(string)" -RpcUrl $RpcUrl
 if ($LASTEXITCODE -eq 0) {
   Write-Host " ✅" -ForegroundColor Green
   Write-Host "  Name: $name" -ForegroundColor White
 } else {
-  Write-Host " ⚠️ (optional field)" -ForegroundColor Yellow
+  Write-Host " ⚠️  (not available)" -ForegroundColor Yellow
   $name = $null
 }
 
-# Get token symbol
+# ── symbol() ──────────────────────────────────────────────────────────────────
 Write-Host "Fetching symbol()..." -NoNewline -ForegroundColor DarkGray
-$symbol = Invoke-ContractRead -ContractAddress $Token -Selector "symbol" -RpcUrl $RpcUrl
+$symbol = Invoke-ContractRead -ContractAddress $Token -Signature "symbol()(string)" -RpcUrl $RpcUrl
 if ($LASTEXITCODE -eq 0) {
   Write-Host " ✅" -ForegroundColor Green
   Write-Host "  Symbol: $symbol" -ForegroundColor White
 } else {
-  Write-Host " ⚠️ (optional field)" -ForegroundColor Yellow
+  Write-Host " ⚠️  (not available)" -ForegroundColor Yellow
   $symbol = $null
 }
 
-# Get decimals
+# ── decimals() ────────────────────────────────────────────────────────────────
 Write-Host "Fetching decimals()..." -NoNewline -ForegroundColor DarkGray
-$decimals = Invoke-ContractRead -ContractAddress $Token -Selector "decimals" -RpcUrl $RpcUrl
+$decimalsRaw = Invoke-ContractRead -ContractAddress $Token -Signature "decimals()(uint8)" -RpcUrl $RpcUrl
 if ($LASTEXITCODE -eq 0) {
   Write-Host " ✅" -ForegroundColor Green
-  Write-Host "  Decimals: $decimals" -ForegroundColor White
+  Write-Host "  Decimals: $decimalsRaw" -ForegroundColor White
+  $decimalsInt = [int]$decimalsRaw
 } else {
   Write-Host " ❌" -ForegroundColor Red
-  Write-Error "Failed to fetch decimals"
+  Write-Error "Failed to fetch decimals — cannot continue without this value."
   exit 1
 }
 
-# Get total supply
+# ── totalSupply() ─────────────────────────────────────────────────────────────
 Write-Host "Fetching totalSupply()..." -NoNewline -ForegroundColor DarkGray
-$totalSupplyRaw = Invoke-ContractRead -ContractAddress $Token -Selector "totalSupply" -RpcUrl $RpcUrl
+$totalSupplyRaw = Invoke-ContractRead -ContractAddress $Token -Signature "totalSupply()(uint256)" -RpcUrl $RpcUrl
 if ($LASTEXITCODE -eq 0) {
   Write-Host " ✅" -ForegroundColor Green
-  
-  # Convert from wei to human-readable format
+
   try {
-    $divisor = [System.Numerics.BigInteger]::Parse("1" + ("0" * [int]$decimals))
-    $totalSupplyBig = [System.Numerics.BigInteger]::Parse($totalSupplyRaw)
-    $totalSupplyDisplay = $totalSupplyBig / $divisor
-    $remainder = $totalSupplyBig % $divisor
-    
-    $displayValue = "$totalSupplyDisplay"
-    if ($remainder -gt 0) {
-      $remainderStr = $remainder.ToString().PadLeft([int]$decimals, '0')
-      $displayValue += ".$remainderStr"
-    }
-    
+    $displayValue = Format-TokenAmount -RawAmount $totalSupplyRaw -Decimals $decimalsInt
     Write-Host "  Total Supply: $displayValue $symbol" -ForegroundColor White
     Write-Host "  Total Supply (raw): $totalSupplyRaw" -ForegroundColor DarkGray
   } catch {
@@ -113,30 +130,21 @@ if ($LASTEXITCODE -eq 0) {
   }
 } else {
   Write-Host " ❌" -ForegroundColor Red
-  Write-Error "Failed to fetch total supply"
+  Write-Error "Failed to fetch totalSupply."
   exit 1
 }
 
-# Get account balance if provided
+# ── balanceOf(account) ────────────────────────────────────────────────────────
 if ($Account) {
   Write-Host ""
-  Write-Host "Fetching balance for $Account..." -NoNewline -ForegroundColor DarkGray
-  $balanceRaw = Invoke-ContractRead -ContractAddress $Token -Selector "balanceOf" -Args $Account -RpcUrl $RpcUrl
+  Write-Host "Fetching balanceOf($Account)..." -NoNewline -ForegroundColor DarkGray
+  $balanceRaw = Invoke-ContractRead -ContractAddress $Token `
+    -Signature "balanceOf(address)(uint256)" -CallArgs @($Account) -RpcUrl $RpcUrl
   if ($LASTEXITCODE -eq 0) {
     Write-Host " ✅" -ForegroundColor Green
-    
+
     try {
-      $divisor = [System.Numerics.BigInteger]::Parse("1" + ("0" * [int]$decimals))
-      $balanceBig = [System.Numerics.BigInteger]::Parse($balanceRaw)
-      $balanceDisplay = $balanceBig / $divisor
-      $remainder = $balanceBig % $divisor
-      
-      $displayValue = "$balanceDisplay"
-      if ($remainder -gt 0) {
-        $remainderStr = $remainder.ToString().PadLeft([int]$decimals, '0')
-        $displayValue += ".$remainderStr"
-      }
-      
+      $displayValue = Format-TokenAmount -RawAmount $balanceRaw -Decimals $decimalsInt
       Write-Host "  Balance: $displayValue $symbol" -ForegroundColor White
       Write-Host "  Balance (raw): $balanceRaw" -ForegroundColor DarkGray
     } catch {
@@ -144,7 +152,7 @@ if ($Account) {
     }
   } else {
     Write-Host " ❌" -ForegroundColor Red
-    Write-Error "Failed to fetch balance"
+    Write-Error "Failed to fetch balance for $Account."
     exit 1
   }
 }
