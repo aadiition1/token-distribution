@@ -1,0 +1,22 @@
+{
+  "name": "token-distribution-wizard",
+  "version": "1.0.0",
+  "description": "Production-grade one-shot ERC-20 token deployment and distribution wizard",
+  "main": "wizard/run.js",
+  "scripts": {
+    "start":   "node wizard/run.js",
+    "dry-run": "node wizard/run.js --dry-run",
+    "transfer": "node wizard/transfer.js"
+  },
+  "keywords": ["web3", "erc20", "bep20", "token", "distribution", "airdrop", "deploy", "ethers"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.0",
+    "fs-extra": "^11.2.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

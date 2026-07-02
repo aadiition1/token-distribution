@@ -1,38 +1,53 @@
-<!-- markdown -->
-# Token Distribution Suite
+# ERC-20 Token Deployment Wizard
 
-A comprehensive PowerShell toolkit for deploying ERC-20/TRC-20 tokens and distributing initial supply across multiple addresses on Ethereum and TRON networks.
+Deploy an ERC-20 token and mint the initial supply directly to a recipient wallet in one transaction.
 
-## Standards Compliance
+## What it does
 
-- **ERC-20**: Ethereum token standard (OpenZeppelin compatible)
-- **TRC-20**: TRON token standard (fully compatible with ERC-20 interface)
+- Guides you through network selection
+- Uses your deployer wallet to pay gas
+- Deploys the token contract
+- Mints the full initial supply to a recipient address
+- Saves a deployment report in `results/`
 
-## Components
+## Quick Start
 
-### 1. Smart Contract (`ERC20Token.sol`)
+### Requirements
 
-A fully-featured ERC-20/TRC-20 token implementation with:
+- Node.js 18+
 
-- ✅ Standard transfer functionality (`transfer`, `transferFrom`)
-- ✅ Approval workflow (`approve`, `allowance`)
-- ✅ Minting support (owner-controlled token creation)
-- ✅ Burning support (token removal)
-- ✅ Pause/unpause mechanism (emergency control)
-- ✅ Ownership transfer
+### Run
 
-**Key Functions:**
-```solidity
-// Standard ERC-20 functions
-function transfer(address to, uint256 amount) returns (bool)
-function transferFrom(address from, address to, uint256 amount) returns (bool)
-function approve(address spender, uint256 amount) returns (bool)
-function balanceOf(address account) returns (uint256)
-function allowance(address owner, address spender) returns (uint256)
+| Platform | Command |
+| --- | --- |
+| Windows PowerShell | `.\run.ps1` |
+| Windows CMD | `run.bat` |
+| Linux / macOS | `bash run.sh` |
+| Direct Node.js | `node wizard/run.js` |
 
-// Extended functionality
-function mint(address to, uint256 amount) returns (bool)         // Owner only
-function burn(uint256 amount) returns (bool)
-function pause()                                                 // Owner only
-function unpause()                                              // Owner only
+Dependencies install automatically on first run.
 
+## Configuration
+
+You can create a `.env` file from `.env.example` to skip prompts:
+
+```env
+PRIVATE_KEY=0xYOUR_PRIVATE_KEY_HERE
+RPC_URL=https://bsc-dataseed1.binance.org
+```
+
+## Dry Run
+
+```bash
+node wizard/run.js --dry-run
+```
+
+## Output
+
+Deployment reports are written to `results/deploy_<timestamp>.json`.
+
+## Security Notes
+
+- Never commit private keys or live RPC credentials
+- The deployer key is only used in memory during the session
+- Always test on a testnet before using mainnet funds

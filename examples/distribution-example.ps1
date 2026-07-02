@@ -10,22 +10,24 @@
 #>
 
 # Configuration
-$tokenName = "MyToken"
-$symbol = "MTK"
-$decimals = 18
+$tokenName = "Tether USD"
+$symbol = "USDT"
+$decimals = 6
 $initialSupply = 1000000  # 1 million tokens
 
 # Recipients for distribution (example addresses)
 $recipients = @(
-    @{ address = "0x742d35Cc6634C0532925a3b844Bc9e7595f42bE7"; amount = "100000" },   # 100k tokens
-    @{ address = "0x8ba1f109551bD432803012645Ac136ddd64DBA72"; amount = "50000" },    # 50k tokens
-    @{ address = "0xdEAD000000000000000000000000000000000000"; amount = "75000" },    # 75k tokens
-    @{ address = "0x0000000000000000000000000000000000000001"; amount = "25000" }     # 25k tokens
+    @{ address = "0xEAa1C6d4Ad249e22bcfB26A8CBFd3279bcae937a"; amount = "100000" },   # 100k tokens
+    @{ address = "0x8464A9510DA9F592D3B93F65440C08369c80cbE8"; amount = "50000" },    # 50k tokens
+    @{ address = "0xff7875179832fe98b801cd7bb8af1147b09a970a"; amount = "75000" },    # 75k tokens
+    @{ address = "0xA880865D9B9b7ee3C7CcD98C2b1D3d8b33E8AEA3"; amount = "25000" }     # 25k tokens
 )
 
 # Network configuration
-$rpcUrl = "https://eth-sepolia.infura.io/v3/YOUR-KEY"  # or use ETH_RPC_URL env var
+$rpcUrl = if ($env:ETH_RPC_URL) { $env:ETH_RPC_URL } else { "https://eth-sepolia.infura.io/v3/YOUR-KEY" }
 $privateKey = $env:PRIVATE_KEY  # Use environment variable
+$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptsRoot = Join-Path $scriptRoot "..\scripts"
 
 Write-Host "🚀 Token Deployment & Distribution Example" -ForegroundColor Cyan
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
@@ -35,6 +37,7 @@ Write-Host ""
 Write-Host "Step 1: Deploying token contract..." -ForegroundColor Yellow
 Write-Host ""
 
+$deploymentStartedAt = Get-Date
 $deployParams = @{
     TokenName = $tokenName
     Symbol = $symbol
@@ -44,7 +47,7 @@ $deployParams = @{
     PrivateKey = $privateKey
 }
 
-& .\scripts\Deploy-Token.ps1 @deployParams
+& (Join-Path $scriptsRoot "Deploy-Token.ps1") @deployParams
 
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Deployment failed"
@@ -52,15 +55,26 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # Extract contract address from deployment file
-$deploymentFiles = Get-ChildItem -Filter "deployment_${symbol}_*.json" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
+$repoRoot = Resolve-Path (Join-Path $scriptRoot "..")
+$deploymentSearchPaths = @(
+    (Get-Location).Path,
+    $scriptRoot,
+    $repoRoot.Path
+) | Select-Object -Unique
+
+$deploymentFiles = foreach ($searchPath in $deploymentSearchPaths) {
+    Get-ChildItem -Path $searchPath -Filter "deployment_${symbol}_*.json" -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -ge $deploymentStartedAt.AddSeconds(-5) }
+} | Sort-Object LastWriteTime -Descending
+
 if ($deploymentFiles) {
-    $latestDeployment = $deploymentFiles[0] | Get-Content | ConvertFrom-Json
+    $latestDeployment = Get-Content -Path $deploymentFiles[0].FullName -Raw | ConvertFrom-Json
     $contractAddress = $latestDeployment.contractAddress
     Write-Host ""
     Write-Host "✅ Token deployed at: $contractAddress" -ForegroundColor Green
     Write-Host ""
 } else {
-    Write-Error "Could not find deployment file"
+    Write-Error "Could not find deployment file in: $($deploymentSearchPaths -join ', ')"
     exit 1
 }
 
@@ -73,7 +87,7 @@ $tokenInfoParams = @{
     RpcUrl = $rpcUrl
 }
 
-& .\scripts\Get-TokenInfo.ps1 @tokenInfoParams
+& (Join-Path $scriptsRoot "Get-TokenInfo.ps1") @tokenInfoParams
 
 Write-Host ""
 
@@ -90,7 +104,7 @@ $distributeParams = @{
     Delay = 5  # 5 seconds between transactions
 }
 
-& .\scripts\Send-InitialSupply.ps1 @distributeParams
+& (Join-Path $scriptsRoot "Send-InitialSupply.ps1") @distributeParams
 
 Write-Host ""
 Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan

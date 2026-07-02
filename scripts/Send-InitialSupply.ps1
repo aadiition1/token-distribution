@@ -9,8 +9,8 @@
    
 .EXAMPLE
    $recipients = @(
-       @{ address = "0x1234..."; amount = "1000" },
-       @{ address = "0x5678..."; amount = "500" }
+       @{ address = "0x1234..."; amount = "10000" },
+       @{ address = "0x5678..."; amount = "50000" }
    )
    .\Send-InitialSupply.ps1 -Token "0xabcd..." -Decimals "18" -Recipients $recipients
    

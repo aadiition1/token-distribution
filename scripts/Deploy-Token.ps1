@@ -11,7 +11,7 @@
      -Decimals 18 -InitialSupply 1000000 -RpcUrl "https://eth-sepolia.infura.io/v3/YOUR-KEY"
 
 .EXAMPLE
-   .\Deploy-Token.ps1 -ContractPath "./ERC20Token.sol" -Constructor "MyToken","MYT",18,1000000
+   .\Deploy-Token.ps1 -ContractPath "./ERC20Token.sol" -Constructor "Tether USD","USDT",18,1000000
 #>
 
 param(
